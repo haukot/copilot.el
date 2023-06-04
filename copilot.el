@@ -27,7 +27,7 @@ Format: '(:host \"127.0.0.1\" :port 80 :username \"username\" :password \"passwo
 Username and password are optional.
 
 If you are using a MITM proxy which intercepts TLS connections, you may need to disable
-TLS verification. This can be done by setting a pair ':rejectUnauthorized :json-false' 
+TLS verification. This can be done by setting a pair ':rejectUnauthorized :json-false'
 in the proxy plist. For example:
 
   (:host \"127.0.0.1\" :port 80 :rejectUnauthorized :json-false)
@@ -36,7 +36,7 @@ in the proxy plist. For example:
   :options '((:host string) (:port integer) (:username string) (:password string))
   :group 'copilot)
 
-(defcustom copilot-log-max 0
+(defcustom copilot-log-max nil
   "Max size of events buffer. 0 disables, nil means infinite.
 Enabling event logging may slightly affect performance."
   :group 'copilot
@@ -159,7 +159,7 @@ Enabling event logging may slightly affect performance."
                                                          :stderr (get-buffer-create "*copilot stderr*")
                                                          :noquery t)))
              (message "Copilot agent started.")
-             (copilot--request 'initialize '(:capabilities 'nil))
+             (copilot--request 'initialize '(:capabilities 'nil));'(:capabilities (:workspace (:workspaceFolders t))))
              (copilot--async-request 'setEditorInfo
                                      `(:editorInfo (:name "Emacs" :version ,emacs-version)
                                        :editorPluginInfo (:name "copilot.el" :version ,copilot-version)
@@ -287,6 +287,17 @@ Enabling event logging may slightly affect performance."
    (t
     (file-name-nondirectory buffer-file-name))))
 
+(defun copilot--get-uri-folder (folder)
+  "Get URI of a given folder."
+  (cond
+   ((not folder)
+    "")
+   ((and (eq system-type 'windows-nt)
+         (not (s-starts-with-p "/" folder)))
+    (concat "file:///" (url-encode-url folder)))
+   (t
+    (concat "file://" (url-encode-url folder)))))
+
 (defun copilot--get-uri ()
   "Get URI of current buffer."
   (cond
@@ -325,6 +336,7 @@ Enabling event logging may slightly affect performance."
 
 (defun copilot--get-language-id ()
   "Get language ID of current buffer."
+  ;; "ruby")
   (let ((mode (s-chop-suffix "-mode" (symbol-name major-mode))))
     (alist-get mode copilot-major-mode-alist mode nil 'equal)))
 
@@ -604,6 +616,23 @@ Use TRANSFORM-FN to transform completion if provided."
                                                 :languageId (copilot--get-language-id)
                                                 :version copilot--doc-version
                                                 :text (copilot--get-source))))))
+
+(defun copilot--send-workspace ()
+  "send workspace."
+  (if (-contains-p copilot--opened-buffers (current-buffer))
+      (progn
+        (copilot--notify 'workspace/didChangeWorkspaceFolders
+                         (list :event
+                          (list :added (vector (list :uri (copilot--get-uri-folder "/home/haukot/programming/projects/cybermango/code/ecwid_ai")))
+                                :removed (vector)))))
+    ))
+
+;;;###autoload
+(defun copilot-add-workspace ()
+  "Complete at the current point."
+  (interactive)
+  (copilot--send-workspace)
+  )
 
 ;;;###autoload
 (defun copilot-complete ()
