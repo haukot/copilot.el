@@ -295,6 +295,19 @@ Enabling event logging may slightly affect performance."
                    (alist-get mode copilot--indentation-alist))))
       tab-width))
 
+;; TODO: надо ещё файлы без директории считать? или нет?
+;; (defun copilot--project-root ()
+;;   "Get current project root."
+;;   (cond
+;;    ((not buffer-file-name)
+;;     "")
+;;    ((fboundp 'projectile-project-root)
+;;     (projectile-project-root))
+;;    ((boundp 'vc-root-dir)
+;;     (vc-root-dir))
+;;    )
+;;   )
+
 (defun copilot--get-relative-path ()
   "Get relative path to current buffer."
   (cond
@@ -622,6 +635,7 @@ Use TRANSFORM-FN to transform completion if provided."
                        (point))))
             (copilot--display-overlay-completion text uuid start end)))))))
 
+
 (defun copilot--sync-doc ()
   "Sync current buffer."
   (if (-contains-p copilot--opened-buffers (current-buffer))
@@ -653,6 +667,16 @@ Use TRANSFORM-FN to transform completion if provided."
   (interactive)
   (copilot--send-workspace)
   )
+
+(defun copilot-notify-open-doc ()
+  "Sync current buffer if it not open yet."
+  (if (not(-contains-p copilot--opened-buffers (current-buffer)))
+    (copilot--notify ':textDocument/didOpen
+                      (list :textDocument (list :uri (copilot--get-uri)
+                                                :languageId (copilot--get-language-id)
+                                                :version copilot--doc-version
+                                                :text (copilot--get-source))))))
+(add-hook 'find-file-hook #'copilot-notify-open-doc)
 
 ;;;###autoload
 (defun copilot-complete ()
