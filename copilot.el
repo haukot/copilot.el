@@ -36,7 +36,7 @@ in the proxy plist. For example:
   :options '((:host string) (:port integer) (:username string) (:password string))
   :group 'copilot)
 
-(defcustom copilot-log-max nil
+(defcustom copilot-log-max 0
   "Max size of events buffer. 0 disables, nil means infinite.
 Enabling event logging may slightly affect performance."
   :group 'copilot
@@ -671,12 +671,24 @@ Use TRANSFORM-FN to transform completion if provided."
 (defun copilot-notify-open-doc ()
   "Sync current buffer if it not open yet."
   (if (not(-contains-p copilot--opened-buffers (current-buffer)))
-    (copilot--notify ':textDocument/didOpen
-                      (list :textDocument (list :uri (copilot--get-uri)
-                                                :languageId (copilot--get-language-id)
-                                                :version copilot--doc-version
-                                                :text (copilot--get-source))))))
+      (progn
+        (copilot--notify ':textDocument/didOpen
+                         (list :textDocument (list :uri (copilot--get-uri)
+                                                   :languageId (copilot--get-language-id)
+                                                   :version copilot--doc-version
+                                                   :text (copilot--get-source))))
+        (add-to-list 'copilot--opened-buffers (current-buffer)))))
+
+(defun copilot-notify-focus-doc ()
+  "Focus current buffer if it already open."
+  (if (-contains-p copilot--opened-buffers (current-buffer))
+    (copilot--notify ':textDocument/didFocus
+                      (list :textDocument (list :uri (copilot--get-uri))))))
+
 (add-hook 'find-file-hook #'copilot-notify-open-doc)
+;; TODO: слишком часто вызывается, при разбиение окна ещё и между буферами скачет
+;; (вероятно специфика функции, которая разбивает окно)
+(add-hook 'buffer-list-update-hook #'copilot-notify-focus-doc)
 
 ;;;###autoload
 (defun copilot-complete ()
