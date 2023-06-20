@@ -16,6 +16,7 @@
   :group 'completion
   :prefix "copilot-")
 
+;; TODO: мне это надо выставить в 0.1 хотя бы. Хотя бы чтобы при быстрой печати не триггерился
 (defcustom copilot-idle-delay 0
   "Time in seconds to wait before starting completion. Complete immediately if set to 0."
   :type 'float
@@ -36,7 +37,7 @@ in the proxy plist. For example:
   :options '((:host string) (:port integer) (:username string) (:password string))
   :group 'copilot)
 
-(defcustom copilot-log-max 0
+(defcustom copilot-log-max nil
   "Max size of events buffer. 0 disables, nil means infinite.
 Enabling event logging may slightly affect performance."
   :group 'copilot
@@ -639,11 +640,7 @@ Use TRANSFORM-FN to transform completion if provided."
 (defun copilot--sync-doc ()
   "Sync current buffer."
   (if (-contains-p copilot--opened-buffers (current-buffer))
-      (progn
-        (copilot--notify 'textDocument/didChange
-                          (list :textDocument (list :uri (copilot--get-uri)
-                                                    :version copilot--doc-version)
-                                :contentChanges (vector (list :text (copilot--get-source))))))
+      ()
     (add-to-list 'copilot--opened-buffers (current-buffer))
     (copilot--notify ':textDocument/didOpen
                       (list :textDocument (list :uri (copilot--get-uri)
@@ -767,9 +764,9 @@ Use this for custom bindings in `copilot-mode'.")
   (advice-add 'posn-at-point :before-until #'copilot--posn-advice)
   (if copilot-mode
       (progn
-        (add-hook 'post-command-hook #'copilot--post-command nil 'local)
+        (add-hook 'after-change-functions #'copilot--post-command nil 'local)
         (add-hook 'before-change-functions #'copilot--on-change nil 'local))
-    (remove-hook 'post-command-hook #'copilot--post-command 'local)
+    (remove-hook 'after-change-functions #'copilot--post-command 'local)
     (remove-hook 'before-change-functions #'copilot--on-change 'local)))
 
 (defun copilot--posn-advice (&rest args)
@@ -785,11 +782,37 @@ Use this for custom bindings in `copilot-mode'.")
 (define-global-minor-mode global-copilot-mode
     copilot-mode copilot-mode)
 
+;; TODO: why this is before?
 (defun copilot--on-change (&rest _args)
   "Handle `before-change-functions' hook."
   (cl-incf copilot--doc-version))
 
-(defun copilot--post-command ()
+;; TODO error let*: Args out of range: 1, 22701
+;; maybe without (= char -1) were work?
+(defun copilot--send-changed (begin end length)
+  "My function to notify about changes after they happen."
+  ;; Calculate the original start and end positions before the change.
+  (let* ((original-end (+ begin length))
+         (start-line (line-number-at-pos begin))
+         (start-char (let ((char (- begin (line-beginning-position))))
+                       (if (= char -1) begin char))) ;; -1 when newline added
+         (end-line (line-number-at-pos original-end))
+         (end-char (let ((char (- original-end (line-beginning-position))))
+                     (if (= char -1) original-end char))) ;; -1 when newline added
+         ;; Get the changed text.
+         (new-text (buffer-substring-no-properties begin end)))
+    ;; Notify copilot about the change.
+    (copilot--notify ':textDocument/didChange
+                     (list :textDocument (list :uri (copilot--get-uri)
+                                               :version copilot--doc-version)
+                           :contentChanges (vector (list :range (list :start (list :line start-line
+                                                                                   :character start-char)
+                                                                       :end (list :line end-line
+                                                                                  :character end-char))
+                                                   :text new-text))))))
+
+;; TODO: сюда нужна проверка на то, что copilot включен?
+(defun copilot--post-command (begin end length)
   "Complete in `post-command-hook' hook."
   (when (and this-command
              (not (and (symbolp this-command)
@@ -797,6 +820,9 @@ Use this for custom bindings in `copilot-mode'.")
                         (s-starts-with-p "copilot-" (symbol-name this-command))
                         (member this-command copilot-clear-overlay-ignore-commands)
                         (copilot--self-insert this-command)))))
+
+    (copilot--send-changed begin end length)
+
     (copilot-clear-overlay)
     (when copilot--post-command-timer
       (cancel-timer copilot--post-command-timer))
