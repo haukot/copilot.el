@@ -17,7 +17,7 @@
   :prefix "copilot-")
 
 ;; TODO: мне это надо выставить в 0.1 хотя бы. Хотя бы чтобы при быстрой печати не триггерился
-(defcustom copilot-idle-delay 0
+(defcustom copilot-idle-delay 0.1
   "Time in seconds to wait before starting completion. Complete immediately if set to 0."
   :type 'float
   :group 'copilot)
@@ -37,7 +37,7 @@ in the proxy plist. For example:
   :options '((:host string) (:port integer) (:username string) (:password string))
   :group 'copilot)
 
-(defcustom copilot-log-max nil
+(defcustom copilot-log-max 0
   "Max size of events buffer. 0 disables, nil means infinite.
 Enabling event logging may slightly affect performance."
   :group 'copilot
@@ -642,28 +642,29 @@ Use TRANSFORM-FN to transform completion if provided."
   (if (-contains-p copilot--opened-buffers (current-buffer))
       ()
     (add-to-list 'copilot--opened-buffers (current-buffer))
+    (setq copilot--recent-changes nil)
     (copilot--notify ':textDocument/didOpen
                       (list :textDocument (list :uri (copilot--get-uri)
                                                 :languageId (copilot--get-language-id)
                                                 :version copilot--doc-version
                                                 :text (copilot--get-source))))))
 
-(defun copilot--send-workspace ()
-  "send workspace."
-  (if (-contains-p copilot--opened-buffers (current-buffer))
-      (progn
-        (copilot--notify 'workspace/didChangeWorkspaceFolders
-                         (list :event
-                          (list :added (vector (list :uri (copilot--get-uri-folder "/home/haukot/programming/projects/cybermango/code/ecwid_ai")))
-                                :removed (vector)))))
-    ))
+;; (defun copilot--send-workspace ()
+;;   "send workspace."
+;;   (if (-contains-p copilot--opened-buffers (current-buffer))
+;;       (progn
+;;         (copilot--notify 'workspace/didChangeWorkspaceFolders
+;;                          (list :event
+;;                           (list :added (vector (list :uri (copilot--get-uri-folder "/home/haukot/programming/projects/cybermango/code/ecwid_ai")))
+;;                                 :removed (vector)))))
+;;     ))
 
-;;;###autoload
-(defun copilot-add-workspace ()
-  "Complete at the current point."
-  (interactive)
-  (copilot--send-workspace)
-  )
+;; ;;;###autoload
+;; (defun copilot-add-workspace ()
+;;   "Complete at the current point."
+;;   (interactive)
+;;   (copilot--send-workspace)
+;;   )
 
 (defun copilot-notify-open-doc ()
   "Sync current buffer if it not open yet."
@@ -765,9 +766,9 @@ Use this for custom bindings in `copilot-mode'.")
   (if copilot-mode
       (progn
         (add-hook 'after-change-functions #'copilot--post-command nil 'local)
-        (add-hook 'before-change-functions #'copilot--on-change nil 'local))
+        (add-hook 'before-change-functions #'copilot--before-change nil 'local))
     (remove-hook 'after-change-functions #'copilot--post-command 'local)
-    (remove-hook 'before-change-functions #'copilot--on-change 'local)))
+    (remove-hook 'before-change-functions #'copilot--before-change 'local)))
 
 (defun copilot--posn-advice (&rest args)
   "Remap posn if in copilot-mode."
@@ -782,35 +783,6 @@ Use this for custom bindings in `copilot-mode'.")
 (define-global-minor-mode global-copilot-mode
     copilot-mode copilot-mode)
 
-;; TODO: why this is before?
-(defun copilot--on-change (&rest _args)
-  "Handle `before-change-functions' hook."
-  (cl-incf copilot--doc-version))
-
-;; TODO error let*: Args out of range: 1, 22701
-;; maybe without (= char -1) were work?
-(defun copilot--send-changed (begin end length)
-  "My function to notify about changes after they happen."
-  ;; Calculate the original start and end positions before the change.
-  (let* ((original-end (+ begin length))
-         (start-line (line-number-at-pos begin))
-         (start-char (let ((char (- begin (line-beginning-position))))
-                       (if (= char -1) begin char))) ;; -1 when newline added
-         (end-line (line-number-at-pos original-end))
-         (end-char (let ((char (- original-end (line-beginning-position))))
-                     (if (= char -1) original-end char))) ;; -1 when newline added
-         ;; Get the changed text.
-         (new-text (buffer-substring-no-properties begin end)))
-    ;; Notify copilot about the change.
-    (copilot--notify ':textDocument/didChange
-                     (list :textDocument (list :uri (copilot--get-uri)
-                                               :version copilot--doc-version)
-                           :contentChanges (vector (list :range (list :start (list :line start-line
-                                                                                   :character start-char)
-                                                                       :end (list :line end-line
-                                                                                  :character end-char))
-                                                   :text new-text))))))
-
 ;; TODO: сюда нужна проверка на то, что copilot включен?
 (defun copilot--post-command (begin end length)
   "Complete in `post-command-hook' hook."
@@ -821,7 +793,7 @@ Use this for custom bindings in `copilot-mode'.")
                         (member this-command copilot-clear-overlay-ignore-commands)
                         (copilot--self-insert this-command)))))
 
-    (copilot--send-changed begin end length)
+    (copilot--after-change begin end length)
 
     (copilot-clear-overlay)
     (when copilot--post-command-timer
@@ -831,6 +803,144 @@ Use this for custom bindings in `copilot-mode'.")
                                nil
                                #'copilot--post-command-debounce
                                (current-buffer)))))
+
+;; https://github.com/joaotavora/eglot/blob/8b5532dd32b25276c1857508030b207f765ef9b6/eglot.el#L717
+(cl-defmacro copilot--widening (&rest body)
+  "Save excursion and restriction.  Widen.  Then run BODY." (declare (debug t))
+  `(save-excursion (save-restriction (widen) ,@body)))
+
+;; https://github.com/joaotavora/eglot/blob/8b5532dd32b25276c1857508030b207f765ef9b6/eglot.el#L1472
+(defalias 'copilot--bol
+  (if (fboundp 'pos-bol) #'pos-bol
+    (lambda (&optional n) (let ((inhibit-field-text-motion t))
+                            (line-beginning-position n))))
+  "Return position of first character in current line.")
+
+;; https://github.com/joaotavora/eglot/blob/8b5532dd32b25276c1857508030b207f765ef9b6/eglot.el#L1513
+(defun copilot-utf-8-linepos ()
+  "Calculate number of UTF-8 bytes from line beginning."
+  (length (encode-coding-region (copilot--bol) (point) 'utf-8-unix t)))
+
+;; https://github.com/joaotavora/eglot/blob/8b5532dd32b25276c1857508030b207f765ef9b6/eglot.el#L1560
+(defun copilot-move-to-utf-8-linepos (n)
+  "Move to line's Nth byte as computed by LSP's UTF-8 criterion."
+  (let* ((bol (copilot--bol))
+         (goal-byte (+ (position-bytes bol) n))
+         (eol (line-end-position)))
+    (goto-char bol)
+    (while (and (< (position-bytes (point)) goal-byte) (< (point) eol))
+      ;; raw bytes take 2 bytes in the buffer
+      (when (>= (char-after) #x3fff80) (setq goal-byte (1+ goal-byte)))
+      (forward-char 1))))
+
+;; https://github.com/joaotavora/eglot/blob/8b5532dd32b25276c1857508030b207f765ef9b6/eglot.el#L1530
+(defun copilot--pos-to-lsp-position (&optional pos)
+  "Convert point POS to LSP position."
+  (copilot--widening
+   ;; LSP line is zero-origin; emacs is one-origin.
+   (list :line (1- (line-number-at-pos pos t))
+         :character (progn (when pos (goto-char pos))
+                           (copilot-utf-8-linepos)))))
+
+;; https://github.com/joaotavora/eglot/blob/8b5532dd32b25276c1857508030b207f765ef9b6/eglot.el#L2431
+(defvar-local copilot--recent-changes nil
+  "Recent buffer changes as collected by `copilot--before-change'.")
+
+;; https://github.com/joaotavora/eglot/blob/8b5532dd32b25276c1857508030b207f765ef9b6/eglot.el#L2440
+(defun copilot--before-change (beg end)
+  "Hook onto `before-change-functions' with BEG and END."
+  (when (listp copilot--recent-changes)
+    ;; Records BEG and END, crucially convert them into LSP
+    ;; (line/char) positions before that information is lost (because
+    ;; the after-change thingy doesn't know if newlines were
+    ;; deleted/added).  Also record markers of BEG and END
+    ;; (github#259)
+    (push `(,(copilot--pos-to-lsp-position beg)
+            ,(copilot--pos-to-lsp-position end)
+            (,beg . ,(copy-marker beg nil))
+            (,end . ,(copy-marker end t)))
+          copilot--recent-changes)))
+
+(defvar-local copilot--change-idle-timer nil "Idle timer for didChange signals.")
+(defcustom copilot-send-changes-idle-time 0
+  "Don't tell server of changes before Emacs's been idle for this many seconds."
+  :type 'number)
+
+(cl-defmacro copilot--when-live-buffer (buf &rest body)
+  "Check BUF live, then do BODY in it." (declare (indent 1) (debug t))
+  (let ((b (cl-gensym)))
+    `(let ((,b ,buf)) (if (buffer-live-p ,b) (with-current-buffer ,b ,@body)))))
+
+;; From https://github.com/joaotavora/eglot/blob/8b5532dd32b25276c1857508030b207f765ef9b6/eglot.el#L2457
+(defun copilot--after-change (beg end pre-change-length)
+  "Hook onto `after-change-functions'.
+Records BEG, END and PRE-CHANGE-LENGTH locally."
+  (cl-incf copilot--doc-version)
+  (pcase (car-safe copilot--recent-changes)
+    (`(,lsp-beg ,lsp-end
+                (,b-beg . ,b-beg-marker)
+                (,b-end . ,b-end-marker))
+     ;; github#259 and github#367: with `capitalize-word' & friends,
+     ;; `before-change-functions' records the whole word's `b-beg' and
+     ;; `b-end'.  Similarly, when `fill-paragraph' coalesces two
+     ;; lines, `b-beg' and `b-end' mark end of first line and end of
+     ;; second line, resp.  In both situations, `beg' and `end'
+     ;; received here seemingly contradict that: they will differ by 1
+     ;; and encompass the capitalized character or, in the coalescing
+     ;; case, the replacement of the newline with a space.  We keep
+     ;; both markers and positions to detect and correct this.  In
+     ;; this specific case, we ignore `beg', `len' and
+     ;; `pre-change-len' and send richer information about the region
+     ;; from the markers.  I've also experimented with doing this
+     ;; unconditionally but it seems to break when newlines are added.
+     (if (and (= b-end b-end-marker) (= b-beg b-beg-marker)
+              (or (/= beg b-beg) (/= end b-end)))
+         (setcar copilot--recent-changes
+                 `(,lsp-beg ,lsp-end ,(- b-end-marker b-beg-marker)
+                            ,(buffer-substring-no-properties b-beg-marker
+                                                             b-end-marker)))
+       (setcar copilot--recent-changes
+               `(,lsp-beg ,lsp-end ,pre-change-length
+                          ,(buffer-substring-no-properties beg end)))))
+    (_ (setf copilot--recent-changes :emacs-messup)))
+  (when copilot--change-idle-timer (cancel-timer copilot--change-idle-timer))
+  (let ((buf (current-buffer)))
+    (setq copilot--change-idle-timer
+          (run-with-idle-timer
+           copilot-send-changes-idle-time
+           nil (lambda () (copilot--when-live-buffer buf
+                            (when copilot-mode
+                              ;; TODO; when copilot--satisfy-trigger-predicates
+                              (copilot--signal-textDocument/didChange)
+                              (setq copilot--change-idle-timer nil))))))))
+
+;; https://github.com/joaotavora/eglot/blob/8b5532dd32b25276c1857508030b207f765ef9b6/eglot.el#L2596
+(defun copilot--signal-textDocument/didChange ()
+  "Send textDocument/didChange to server."
+  (when copilot--recent-changes
+    (let* (
+           (full-sync-p (eq :emacs-messup copilot--recent-changes)))
+      (copilot--notify ':textDocument/didChange
+       (list
+        :textDocument (list :uri (copilot--get-uri)
+                            :version copilot--doc-version)
+        :contentChanges
+        (if full-sync-p
+            (vector `(:text ,(copilot--widening
+                              (buffer-substring-no-properties (point-min)
+                                                              (point-max)))))
+          (cl-loop for (beg end len text) in (reverse copilot--recent-changes)
+                   ;; github#259: `capitalize-word' and commands based
+                   ;; on `casify_region' will cause multiple duplicate
+                   ;; empty entries in `copilot--before-change' calls
+                   ;; without an `copilot--after-change' reciprocal.
+                   ;; Weed them out here.
+                   when (numberp len)
+                   vconcat `[,(list :range `(:start ,beg :end ,end)
+                                    :rangeLength len :text text)]))))
+      (setq copilot--recent-changes nil))))
+
+
 
 (defun copilot--self-insert (command)
   "Handle the case where the char just inserted is the start of the completion.
